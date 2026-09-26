@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from fuzzywuzzy import process
 
 from src.hybrid_recommender import HybridRecommender
+from src.matching import matches_language_filter
 
 
 @st.cache_resource
@@ -260,20 +261,66 @@ def main():
     # Main content - Search
     st.header("🔍 Find a Book")
 
-    # Improved search with autocomplete
-    available_titles = sorted(recommender.title_to_idx.keys())
+    # Top-line language setting (English-first for the demo audience)
+    lang_col, search_col, btn_col = st.columns([1.3, 3.2, 1])
 
-    col1, col2 = st.columns([3, 1])
+    with lang_col:
+        language_filter = st.selectbox(
+            "Language",
+            options=["English", "All languages"],
+            index=0,
+            help=(
+                "Limit search and recommendations to English editions. "
+                "Translated titles (e.g. Harry Potter in Turkish/Italian/German) "
+                "are excluded. Books with no language tag are kept by default."
+            ),
+        )
 
-    with col1:
+    with search_col:
         search_query = st.text_input(
             "Search for a book:",
             placeholder="Start typing... (e.g., 'Harry Potter', '1984', 'Lord of the Rings')",
             key="search",
         )
 
-    with col2:
+    with btn_col:
+        st.markdown("<div style='height: 1.7rem'></div>", unsafe_allow_html=True)
         search_button = st.button("🔍 Search", type="primary", width="stretch")
+
+    include_unknown_language = True
+    if language_filter == "English" and metadata_dict:
+        include_unknown_language = st.checkbox(
+            "Include books with unknown language",
+            value=True,
+            help=(
+                "About half the catalog has no language_code. Most unlabeled "
+                "editions are English; uncheck to require an explicit eng/en-* tag."
+            ),
+        )
+
+    # Title → language from metadata (via collab matrix book_id)
+    title_to_language = {}
+    for title, idx in recommender.title_to_idx.items():
+        book_id = recommender.collab_book_ids[idx]
+        title_to_language[title] = metadata_dict.get(book_id, {}).get("language_code", "")
+
+    all_titles = sorted(recommender.title_to_idx.keys())
+    available_titles = [
+        title
+        for title in all_titles
+        if matches_language_filter(
+            title_to_language.get(title, ""),
+            language_filter,
+            include_unknown=include_unknown_language,
+        )
+    ]
+
+    if language_filter == "English":
+        st.caption(
+            f"Searching {len(available_titles):,} English"
+            f"{' + unlabeled' if include_unknown_language else ''} titles "
+            f"(of {len(all_titles):,} total). Switch to All languages for translations."
+        )
 
     # Show search results
     if search_query:
@@ -287,7 +334,11 @@ def main():
                 format_func=lambda x: f"{x} ({[s for t, s in matches if t == x][0]}% match)",
             )
         else:
-            st.warning("No matches found. Try lowering the search threshold.")
+            st.warning(
+                "No matches found. Try lowering the search threshold"
+                + (", switching Language to All languages," if language_filter == "English" else "")
+                + " or a different query."
+            )
             selected_book = None
     else:
         selected_book = None
@@ -299,17 +350,21 @@ def main():
             return
 
         with st.spinner(f"Generating recommendations for '{selected_book}'..."):
+            # Over-fetch when language-filtering so translated neighbors don't
+            # shrink the final list below the requested count.
+            fetch_n = n_recommendations
+            if language_filter == "English":
+                fetch_n = min(max(n_recommendations * 5, n_recommendations), 100)
+
             # Get recommendations based on method
             if recommendation_method == "Hybrid":
-                recommendations = recommender.recommend_hybrid(
-                    recommender.title_to_idx[selected_book], n_recommendations
-                )
+                recommendations = recommender.recommend_hybrid(recommender.title_to_idx[selected_book], fetch_n)
             elif recommendation_method == "Collaborative Only":
-                recs = recommender.recommend_collaborative(recommender.title_to_idx[selected_book], n_recommendations)
+                recs = recommender.recommend_collaborative(recommender.title_to_idx[selected_book], fetch_n)
                 # Convert to hybrid format (idx, combined_score, collab, content)
                 recommendations = [(idx, 1 - dist, 1 - dist, 0) for idx, dist in recs]
             else:  # Content Only
-                recs = recommender.recommend_content(recommender.title_to_idx[selected_book], n_recommendations)
+                recs = recommender.recommend_content(recommender.title_to_idx[selected_book], fetch_n)
                 recommendations = [(idx, 1 - dist, 0, 1 - dist) for idx, dist in recs]
 
         if not recommendations:
@@ -323,6 +378,13 @@ def main():
             book_info = metadata_dict.get(book_id, {})
 
             # Apply filters
+            if not matches_language_filter(
+                book_info.get("language_code", ""),
+                language_filter,
+                include_unknown=include_unknown_language,
+            ):
+                continue
+
             if min_rating and book_info.get("average_rating"):
                 if book_info["average_rating"] < min_rating:
                     continue
@@ -336,6 +398,8 @@ def main():
                     continue
 
             filtered_recs.append((idx, combined, collab, content))
+            if len(filtered_recs) >= n_recommendations:
+                break
 
         if not filtered_recs:
             st.warning("No recommendations match your filters.")
@@ -371,10 +435,12 @@ def main():
 
                             year = book_info.get("publication_year")
                             pages = book_info.get("num_pages")
+                            lang = book_info.get("language_code") or "unknown"
                             if year:
                                 st.markdown(f"**Published:** {int(year)}")
                             if pages:
                                 st.markdown(f"**Pages:** {int(pages)}")
+                            st.markdown(f"**Language:** {lang}")
 
                             shelves = book_info.get("shelves", "")
                             if shelves:

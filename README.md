@@ -55,19 +55,19 @@ Then:
 uv sync --all-groups
 
 # 2. Download UCSD Goodreads data (~6GB; one-time)
-uv run python src/downloader.py
+python src/downloader.py
 
 # 3. JSON / CSV → parquet (polars streaming)
-uv run python src/serialize_data.py --batch_size=500_000
+python src/serialize_data.py --batch_size=500_000
 
 # 4. Build the sparse interaction matrix + ID mappings
-uv run python prepare_data.py
+python prepare_data.py
 # Smaller smoke-test sample:
-# uv run python prepare_data.py --min_reads=50 --top_books=5000 --top_users=100000
+# python prepare_data.py --min_reads=50 --top_books=5000 --top_users=100000
 
 # 5. (Optional) Build content features for the hybrid recommender
-uv run python src/extract_metadata.py
-uv run python src/create_content_features.py
+python src/extract_metadata.py
+python src/create_content_features.py
 
 # 6. Run the Streamlit app
 uv run --group app streamlit run app/app_enhanced.py
@@ -141,7 +141,7 @@ uv run --group app streamlit run app/app_enhanced.py
 After running the data preparation steps above:
 
 ```bash
-uv run python evaluate.py --n-users 500 --seed 42
+python evaluate.py --n-users 500 --seed 42
 ```
 
 Writes [`docs/EVALUATION.md`](docs/EVALUATION.md) and
