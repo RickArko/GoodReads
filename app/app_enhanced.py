@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from fuzzywuzzy import process
 
+from src.book_ids import is_untitled_fallback
 from src.hybrid_recommender import HybridRecommender
 from src.matching import matches_language_filter
 
@@ -375,7 +376,12 @@ def main():
         filtered_recs = []
         for idx, combined, collab, content in recommendations:
             book_id = recommender.collab_book_ids[idx]
+            title = recommender.idx_to_title.get(idx, "")
             book_info = metadata_dict.get(book_id, {})
+
+            # Skip matrix rows with no resolvable title / metadata body.
+            if is_untitled_fallback(title) or not book_info:
+                continue
 
             # Apply filters
             if not matches_language_filter(
