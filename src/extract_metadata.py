@@ -14,25 +14,55 @@ import json
 import polars as pl
 from loguru import logger
 
+from src.book_ids import load_matrix_id_bridges
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    if value is None or value == "":
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value, default: int = 0) -> int:
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
 
 def extract_metadata(
     json_path="data/goodreads_books.json.gz",
     matrix_mapping_path="data/sparse_matrix_book_mapping.parquet",
+    id_map_path="data/book_id_map.csv",
     output_path="data/book_metadata.parquet",
     top_n_shelves=10,
 ):
     """Extract metadata for books in the matrix.
 
+    Sparse-matrix ``book_id`` values are interaction CSV ids. Book JSON and
+    titles use a separate JSON id space, so this joins through
+    ``book_id_map.csv`` and writes metadata keyed by the CSV id (matrix row id).
+
     Args:
         json_path: Path to goodreads_books.json.gz
         matrix_mapping_path: Path to sparse matrix book mapping
+        id_map_path: Path to CSV↔JSON book id map
         output_path: Output path for extracted metadata
         top_n_shelves: Number of top shelves to keep per book
     """
-    logger.info("Loading matrix book IDs...")
+    logger.info("Loading matrix book IDs and CSV↔JSON bridge...")
     mapping = pl.read_parquet(matrix_mapping_path)
     matrix_book_ids = set(mapping["book_id"].to_list())
-    logger.info(f"Looking for metadata for {len(matrix_book_ids):,} books")
+    json_to_csv, _ = load_matrix_id_bridges(matrix_mapping_path, id_map_path)
+    logger.info(
+        f"Looking for metadata for {len(matrix_book_ids):,} matrix books "
+        f"({len(json_to_csv):,} have a JSON id mapping)"
+    )
 
     # Collect metadata
     metadata_records = []
@@ -48,9 +78,10 @@ def extract_metadata(
                 logger.info(f"Processed {total_processed:,} books, found {found_count:,} matches")
 
             book = json.loads(line)
-            book_id = int(book["book_id"])
+            json_book_id = int(book["book_id"])
 
-            if book_id not in matrix_book_ids:
+            csv_book_id = json_to_csv.get(json_book_id)
+            if csv_book_id is None:
                 continue
 
             found_count += 1
@@ -69,9 +100,10 @@ def extract_metadata(
             shelf_names = [s["name"] for s in shelves_sorted if s.get("name")]
             shelf_counts = [int(s["count"]) for s in shelves_sorted if s.get("count")]
 
-            # Create record
+            # Key by CSV id so joins to the sparse matrix succeed.
             record = {
-                "book_id": book_id,
+                "book_id": csv_book_id,
+                "book_id_json": json_book_id,
                 "title": book.get("title", "")[:500],
                 "authors": author_names,
                 "author_ids": ",".join(author_ids),
@@ -79,18 +111,19 @@ def extract_metadata(
                 "shelves": ",".join(shelf_names),
                 "shelf_counts": ",".join(map(str, shelf_counts)),
                 "num_shelves": len(shelf_names),
-                "average_rating": float(book.get("average_rating", 0)),
-                "ratings_count": int(book.get("ratings_count", 0)),
-                "publication_year": int(book.get("publication_year", 0) or 0),
-                "num_pages": int(book.get("num_pages", 0) or 0),
-                "language_code": book.get("language_code", "")[:10],
+                "average_rating": _safe_float(book.get("average_rating", 0)),
+                "ratings_count": _safe_int(book.get("ratings_count", 0)),
+                "publication_year": _safe_int(book.get("publication_year", 0)),
+                "num_pages": _safe_int(book.get("num_pages", 0)),
+                "language_code": (book.get("language_code") or "")[:10],
             }
 
             metadata_records.append(record)
 
     logger.info(f"Total books processed: {total_processed:,}")
     logger.info(
-        f"Metadata extracted for: {found_count:,} / {len(matrix_book_ids):,} books ({100 * found_count / len(matrix_book_ids):.1f}%)"
+        f"Metadata extracted for: {found_count:,} / {len(matrix_book_ids):,} books "
+        f"({100 * found_count / len(matrix_book_ids):.1f}%)"
     )
 
     # Convert to DataFrame and save

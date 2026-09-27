@@ -16,6 +16,7 @@ import polars as pl
 from scipy.sparse import load_npz
 from sklearn.neighbors import NearestNeighbors
 
+from src.knn_recommender_sparse import create_title_mapping
 from src.matching import fuzzy_title_matches
 
 
@@ -81,16 +82,11 @@ class HybridRecommender:
         metadata = pl.read_parquet(metadata_path)
         self.metadata_dict = {row["book_id"]: row for row in metadata.iter_rows(named=True)}
 
-        # Create title mappings (use collaborative indices as primary)
-        self.title_to_idx = {}
-        self.idx_to_title = {}
-        for idx, book_id in enumerate(self.collab_book_ids):
-            if book_id in self.metadata_dict:
-                title = self.metadata_dict[book_id]["title"]
-                self.title_to_idx[title] = idx
-                self.idx_to_title[idx] = title
-            else:
-                self.idx_to_title[idx] = f"Book ID: {book_id}"
+        # Titles via CSV→JSON bridge (titles.snap), not metadata alone.
+        # Metadata used to be keyed by JSON id while the matrix uses CSV ids,
+        # which produced mass "Book ID: …" placeholders and wrong titles.
+        print("Creating title mappings...")
+        self.title_to_idx, self.idx_to_title, _ = create_title_mapping(self.collab_book_ids)
 
         print(f"Initialized with {len(self.collab_book_ids):,} books")
         print(f"  Collaborative: {self.interaction_matrix.shape}")
@@ -102,6 +98,8 @@ class HybridRecommender:
         print(
             f"  Metadata coverage: {len(self.metadata_dict):,} ({100 * len(self.metadata_dict) / len(self.collab_book_ids):.1f}%)"
         )
+        titled = sum(1 for t in self.idx_to_title.values() if not t.startswith("Book ID:"))
+        print(f"  Title coverage: {titled:,} ({100 * titled / len(self.collab_book_ids):.1f}%)")
 
         # Initialize KNN models
         print("\nFitting collaborative KNN...")

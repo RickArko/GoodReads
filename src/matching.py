@@ -78,3 +78,59 @@ def best_match_idx(
     """Return the matrix index of the best match, or ``None`` if no match clears ``threshold``."""
     matches = fuzzy_title_matches(title_to_idx, query, threshold=threshold, max_results=1, scorer=scorer)
     return matches[0][1] if matches else None
+
+
+# Goodreads ``language_code`` values treated as modern English editions.
+# Intentionally excludes ``enm`` (Middle English).
+ENGLISH_LANGUAGE_CODES = frozenset(
+    {
+        "eng",
+        "en",
+        "en-us",
+        "en-gb",
+        "en-ca",
+        "en-au",
+    }
+)
+
+
+def normalize_language_code(code: str | None) -> str:
+    """Normalize a Goodreads language code for comparison."""
+    if code is None:
+        return ""
+    return str(code).strip().lower()
+
+
+def is_english_language(code: str | None) -> bool:
+    """Return True if ``code`` is a modern English Goodreads language code."""
+    return normalize_language_code(code) in ENGLISH_LANGUAGE_CODES
+
+
+def is_unknown_language(code: str | None) -> bool:
+    """Return True when the catalog has no language code for the book."""
+    return normalize_language_code(code) == ""
+
+
+def matches_language_filter(
+    code: str | None,
+    language_filter: str,
+    *,
+    include_unknown: bool = True,
+) -> bool:
+    """Whether a book language passes the UI language filter.
+
+    Args:
+        code: Raw Goodreads ``language_code`` (may be empty/None).
+        language_filter: ``\"English\"`` or ``\"All languages\"``.
+        include_unknown: When filtering to English, keep books with blank
+            language codes. Roughly half the UCSD catalog is unlabeled; most
+            of those editions are English, while translated titles usually
+            carry an explicit non-English code.
+    """
+    if language_filter == "All languages":
+        return True
+    if language_filter != "English":
+        raise ValueError(f"Unknown language_filter: {language_filter!r}")
+    if is_english_language(code):
+        return True
+    return include_unknown and is_unknown_language(code)
